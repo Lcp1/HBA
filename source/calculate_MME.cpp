@@ -38,6 +38,7 @@ using namespace Eigen;
 string file_path;
 int THR_NUM;
 
+// 由局部点云协方差矩阵的行列式计算高斯微分熵。
 double computeEntropy(pcl::PointCloud< PointType >::Ptr cloud)
 {
 	Eigen::Vector4f centroid;
@@ -48,17 +49,20 @@ double computeEntropy(pcl::PointCloud< PointType >::Ptr cloud)
 	return 0.5f*log(determinant);
 }
 
+// 计算分配给 part_num 的点云分块的平均局部熵。
 void PC2Entropy(double& Entropy, int part_num)
 {
   pcl::PointCloud<PointType>::Ptr full_cloud(new pcl::PointCloud<PointType>);
   pcl::io::loadPCDFile(file_path, *full_cloud);
 
+  // 用 KD 树为每个采样点查询半径 0.3 m 的局部邻域。
   pcl::KdTreeFLANN<PointType> kdtree;
 	kdtree.setInputCloud(full_cloud);
   double Entropy_ = 0;
 
   int partSize = full_cloud->points.size()/THR_NUM;
   pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
+  // 每个线程处理连续 partSize 个点。
   for(size_t i = part_num*partSize; i < (part_num+1)*partSize; i++)
     pc->points.push_back(full_cloud->points[i]);
   
@@ -81,7 +85,7 @@ void PC2Entropy(double& Entropy, int part_num)
   }
   
   Entropy = Entropy_/pc->points.size();
-  cout<<"complete"<<endl;
+  cout<<"complete"<<endl; // 当前线程的分块计算完成。
 }
 
 int main(int argc, char** argv)
@@ -111,6 +115,7 @@ int main(int argc, char** argv)
   }
 
   double sum = std::accumulate(std::begin(Entropys), std::end(Entropys), 0.0);  
+  // 汇总各线程的平均熵，并计算线程间均值和样本标准差。
   double mean =  sum / Entropys.size(); //均值  
   double accum  = 0.0;  
   std::for_each (std::begin(Entropys), std::end(Entropys), [&](const double d)

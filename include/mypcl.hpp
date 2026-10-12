@@ -19,6 +19,7 @@ typedef Eigen::Matrix<double, 6, 6> Matrix6d;
 
 namespace mypcl
 {
+  // 刚体位姿：q 表示旋转，t 表示平移，默认值为单位变换。
   struct pose
   {
     pose(Eigen::Quaterniond _q = Eigen::Quaterniond(1, 0, 0, 0),
@@ -30,6 +31,7 @@ namespace mypcl
   void loadPCD(std::string filePath, int pcd_fill_num, pcl::PointCloud<PointType>::Ptr& pc, int num,
                std::string prefix = "")
   {
+    // pcd_fill_num 是编号最小宽度；正值左侧补零，prefix 可附加子目录。
     std::stringstream ss;
     if(pcd_fill_num > 0)
       ss << std::setw(pcd_fill_num) << std::setfill('0') << num;
@@ -40,6 +42,7 @@ namespace mypcl
 
   void savdPCD(std::string filePath, int pcd_fill_num, pcl::PointCloud<PointType>::Ptr& pc, int num)
   {
+    // 按与 loadPCD 相同的编号规则生成文件名，并以二进制格式保存点云。
     std::stringstream ss;
     if(pcd_fill_num > 0)
       ss << std::setw(pcd_fill_num) << std::setfill('0') << num;
@@ -52,6 +55,7 @@ namespace mypcl
                               Eigen::Quaterniond qe = Eigen::Quaterniond(1, 0, 0, 0),
                               Eigen::Vector3d te = Eigen::Vector3d(0, 0, 0))
   {
+    // 读取每行的平移和四元数，并可在读取时统一施加额外的外部位姿 (qe, te)。
     std::vector<pose> pose_vec;
     std::fstream file;
     file.open(filename);
@@ -72,6 +76,7 @@ namespace mypcl
                             Eigen::Vector3d t,
                             Eigen::Quaterniond q)
   {
+    // 对输入点云逐点应用刚体变换；输入和输出可以是同一个点云对象。
     size_t size = pc_in.points.size();
     pt_out.points.resize(size);
     for(size_t i = 0; i < size; i++)
@@ -92,6 +97,7 @@ namespace mypcl
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr append_cloud(pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc1,
                                                       pcl::PointCloud<pcl::PointXYZRGB> pc2)
   {
+    // 将第二个带颜色点云追加到第一个点云末尾，并保留 RGB 字段。
     size_t size1 = pc1->points.size();
     size_t size2 = pc2.points.size();
     pc1->points.resize(size1 + size2);
@@ -111,6 +117,7 @@ namespace mypcl
   pcl::PointCloud<PointType>::Ptr append_cloud(pcl::PointCloud<PointType>::Ptr pc1,
                                                pcl::PointCloud<PointType> pc2)
   {
+    // XYZ 点云版本的追加操作，只复制坐标字段。
     size_t size1 = pc1->points.size();
     size_t size2 = pc2.points.size();
     pc1->points.resize(size1 + size2);
@@ -129,6 +136,7 @@ namespace mypcl
 
   double compute_inlier_ratio(std::vector<double> residuals, double ratio)
   {
+    // 每三个残差分量合成一个点的 L1 误差，再返回排序后指定比例位置的阈值。
     std::set<double> dis_vec;
     for(size_t i = 0; i < (size_t)(residuals.size() / 3); i++)
       dis_vec.insert(fabs(residuals[3 * i + 0]) +
@@ -139,6 +147,8 @@ namespace mypcl
 
   void write_pose(std::vector<pose>& pose_vec, std::string path)
   {
+    // 以首帧为坐标原点，将整条轨迹归一化后写入 pose.json（平移 xyz、四元数 wxyz）。
+    // 该函数会直接改写传入的 pose_vec。
     std::ofstream file;
     file.open(path + "pose.json", std::ofstream::trunc);
     file.close();
@@ -165,6 +175,7 @@ namespace mypcl
 
   void writeEVOPose(std::vector<double>& lidar_times, std::vector<pose>& pose_vec, std::string path)
   {
+    // 导出 evo 可读取的时间戳、平移 xyz 和四元数 xyzw 格式轨迹。
     std::ofstream file;
     file.open(path + "evo_pose.txt", std::ofstream::trunc);
     for(size_t i = 0; i < pose_vec.size(); i++)

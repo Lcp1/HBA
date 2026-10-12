@@ -22,6 +22,7 @@
 #define NMATCH 5
 #define DVEL 6
 
+// IMU 状态维数、位姿维数、噪声维数及点云匹配相关的编译期常量。
 typedef pcl::PointXYZ PointType;
 // typedef pcl::PointXYZI PointType;
 // typedef pcl::PointXYZINormal PointType;
@@ -33,6 +34,7 @@ Eigen::Matrix<double, DIMU, DIMU> I_imu(Eigen::Matrix<double, DIMU, DIMU>::Ident
 class VOXEL_LOC
 {
 public:
+  // 三维整数体素坐标，用作 unordered_map 的键。
   int64_t x, y, z;
 
   VOXEL_LOC(int64_t vx = 0, int64_t vy = 0, int64_t vz = 0): x(vx), y(vy), z(vz){}
@@ -45,6 +47,7 @@ public:
 
 namespace std
 {
+  // 为体素坐标提供哈希函数，使体素可存入 unordered_map。
   template<>
   struct hash<VOXEL_LOC>
   {
@@ -62,6 +65,7 @@ namespace std
   };
 }
 
+// 返回矩阵元素绝对值之和；用于对矩阵量级进行简单汇总。
 double matrixAbsSum(Eigen::MatrixXd mat)
 {
   double sum = 0.0;
@@ -71,11 +75,13 @@ double matrixAbsSum(Eigen::MatrixXd mat)
   return sum;
 }
 
+// Logistic 映射，将实数输入压缩到 (0, 1)。
 double sigmoid_w(double r)
 {
   return 1.0/(1+exp(-r));
 }
 
+// SO(3) 指数映射：将旋转向量转换成旋转矩阵。
 Eigen::Matrix3d Exp(const Eigen::Vector3d &ang)
 {
   double ang_norm = ang.norm();
@@ -94,6 +100,7 @@ Eigen::Matrix3d Exp(const Eigen::Vector3d &ang)
   }
 }
 
+// 将角速度积分 dt 秒并通过 Rodrigues 公式得到对应旋转矩阵。
 Eigen::Matrix3d Exp(const Eigen::Vector3d &ang_vel, const double &dt)
 {
   double ang_vel_norm = ang_vel.norm();
@@ -116,6 +123,7 @@ Eigen::Matrix3d Exp(const Eigen::Vector3d &ang_vel, const double &dt)
   }
 }
 
+// SO(3) 对数映射：从旋转矩阵恢复旋转向量。
 Eigen::Vector3d Log(const Eigen::Matrix3d &R)
 {
   double theta = (R.trace() > 3.0 - 1e-6) ? 0.0 : std::acos(0.5 * (R.trace() - 1));
@@ -123,6 +131,7 @@ Eigen::Vector3d Log(const Eigen::Matrix3d &R)
   return (std::abs(theta) < 0.001) ? (0.5 * K) : (0.5 * theta / std::sin(theta) * K);
 }
 
+// 向量的反对称矩阵（hat 算子），满足 hat(v) * w = v × w。
 Eigen::Matrix3d hat(const Eigen::Vector3d &v)
 {
   Eigen::Matrix3d Omega;
@@ -132,6 +141,7 @@ Eigen::Matrix3d hat(const Eigen::Vector3d &v)
   return Omega;
 }
 
+// SO(3) 右雅可比及其逆，用于旋转扰动的局部线性化。
 Eigen::Matrix3d jr(Eigen::Vector3d vec)
 {
   double ang = vec.norm();
@@ -167,6 +177,7 @@ Eigen::Matrix3d jr_inv(const Eigen::Matrix3d &rotR)
 
 struct IMUST
 {
+  // 时间、姿态、位置、速度、陀螺仪/加速度计偏置和重力向量。
   double t;
   Eigen::Matrix3d R;
   Eigen::Vector3d p;
@@ -187,6 +198,7 @@ struct IMUST
 
   IMUST &operator+=(const Eigen::Matrix<double, DIMU, 1> &ist)
   {
+    // 按 18 维误差状态更新：旋转使用右乘指数映射，其余分量做加法更新。
     this->R = this->R * Exp(ist.block<3, 1>(0, 0));
     this->p += ist.block<3, 1>(3, 0);
     this->v += ist.block<3, 1>(6, 0);
@@ -210,6 +222,7 @@ struct IMUST
 
   IMUST &operator=(const IMUST &b)
   {
+    // 返回相对状态误差，姿态误差用 SO(3) 对数映射表示。
     this->R = b.R;
     this->p = b.p;
     this->v = b.v;
@@ -222,6 +235,7 @@ struct IMUST
 
   void setZero()
   {
+    // 初始化为单位姿态、零位置/速度/偏置和标准向下重力。
     t = 0; R.setIdentity();
     p.setZero(); v.setZero();
     bg.setZero(); ba.setZero();
@@ -236,6 +250,7 @@ void assign_qt(Eigen::Quaterniond& q, Eigen::Vector3d& t,
   t(0) = t_(0); t(1) = t_(1); t(2) = t_(2);
 }
 
+// 一个体素内的点坐标和数量，用于累计点云质心。
 struct M_POINT
 {
 	float xyz[3];
@@ -244,6 +259,7 @@ struct M_POINT
 
 void downsample_voxel(pcl::PointCloud<PointType>& pc, double voxel_size)
 {
+  // 每个非空体素以点坐标均值作为代表点；小于 1 cm 时不执行降采样。
 	if (voxel_size < 0.01)
 		return;
 
@@ -252,6 +268,7 @@ void downsample_voxel(pcl::PointCloud<PointType>& pc, double voxel_size)
 
 	for (size_t i = 0; i < pt_size; i++)
 	{
+    // 通过整数体素坐标聚合点；负坐标减 1 用于避免一般负小数向零截断。
 		PointType &pt_trans = pc[i];
 		float loc_xyz[3];
 		for (int j = 0; j < 3; j++)
@@ -285,6 +302,7 @@ void downsample_voxel(pcl::PointCloud<PointType>& pc, double voxel_size)
 	pc.clear();
 	pc.resize(pt_size);
 
+  // 用各体素点的算术平均值替换原始点云。
 	size_t i = 0;
 	for (auto iter = feature_map.begin(); iter != feature_map.end(); ++iter)
 	{
@@ -295,6 +313,7 @@ void downsample_voxel(pcl::PointCloud<PointType>& pc, double voxel_size)
 	}
 }
 
+// 对点云原地应用刚体变换 p' = R p + t。
 void pl_transform(pcl::PointCloud<PointType> &pl1, const Eigen::Matrix3d &rr, const Eigen::Vector3d &tt)
 {
   for(PointType &ap : pl1.points)
@@ -307,6 +326,7 @@ void pl_transform(pcl::PointCloud<PointType> &pl1, const Eigen::Matrix3d &rr, co
   }
 }
 
+// 将 IMU 位姿应用到一组 3D 向量，输出变换后的坐标。
 void plvec_trans(PLV(3) &porig, PLV(3) &ptran, IMUST &stat)
 {
   uint asize = porig.size();
@@ -320,6 +340,7 @@ void plvec_trans(PLV(3) &porig, PLV(3) &ptran, IMUST &stat)
 class VOX_FACTOR
 {
 public:
+  // P = sum(p p^T)、v = sum(p)、N = 点数；三者可合并并恢复协方差。
   Eigen::Matrix3d P;
   Eigen::Vector3d v;
   int N;
@@ -347,6 +368,7 @@ public:
 
   Eigen::Matrix3d cov()
   {
+    // 使用二阶矩减去均值外积，得到总体协方差矩阵。
     Eigen::Vector3d center = v / N;
     return P/N - center*center.transpose();
   }
@@ -362,6 +384,7 @@ public:
 
   void transform(const VOX_FACTOR &sigv, const IMUST &stat)
   {
+    // 将聚合统计量按刚体变换解析更新，避免逐点变换后重新累加。
     N = sigv.N;
     v = stat.R*sigv.v + N*stat.p;
     Eigen::Matrix3d rp = stat.R * sigv.v * stat.p.transpose();
@@ -370,6 +393,7 @@ public:
 };
 
 const double threshold = 0.1;
+// 用固定数量的点拟合平面 ax+by+cz+1=0，并检查各点的平面残差。
 bool esti_plane(Eigen::Vector4d &pca_result, const pcl::PointCloud<PointType> &point)
 {
   Eigen::Matrix<double, NMATCH, 3> A;

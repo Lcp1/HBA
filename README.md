@@ -87,3 +87,17 @@ In the development of **HBA**, we stand on the state-of-the-art work: [BALM2](ht
 The source code is released under [GPLv2](LICENSE) license.
 
 We are still working on improving the performance and reliability of our codes. For any technical issues, please contact us via email xliuaa@connect.hku.hk. For commercial use, please contact Dr. Fu Zhang fuzhang@hku.hk.
+  
+编译流程
+sudo add-apt-repository ppa:borglab/gtsam-release-4.1  
+
+sudo apt update
+
+sudo apt install libgtsam-dev libgtsam-unstable-dev
+
+cere安装
+sudo apt-get update
+
+sudo apt-get install -y cmake libeigen3-dev libgoogle-glog-dev libgflags-dev libatlas-base-dev libsuitesparse-dev
+
+sudo apt install libceres-dev

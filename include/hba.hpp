@@ -23,8 +23,10 @@
 class LAYER
 {
 public:
+  // 当前层窗口/线程划分信息及末尾不完整窗口的尺寸。
   int pose_size, layer_num, max_iter, part_length, left_size, left_h_size, j_upper, tail, thread_num,
     gap_num, last_win_size, left_gap_num;
+  // 当前层的点云预处理、体素平面判定和离群约束剔除参数。
   double downsample_size, voxel_size, eigen_ratio, reject_ratio;
   
   std::string data_path;
@@ -35,6 +37,7 @@ public:
   std::vector<VEC(6)> hessians;
   std::vector<pcl::PointCloud<PointType>::Ptr> pcds;
 
+  // 设置单层默认优化参数；位姿、点云和线程容器由后续初始化函数按需分配。
   LAYER()
   {
     pose_size = 0;
@@ -50,6 +53,7 @@ public:
 
   void init_storage(int total_layer_num_)
   {
+    // 根据窗口数分配位姿、点云和线程存储空间。
     mthreads.resize(thread_num);
     mem_costs.resize(thread_num);
 
@@ -57,6 +61,7 @@ public:
     pose_vec.resize(pose_size);
 
     #ifdef FULL_HESS
+    // 非顶层保存局部窗口约束，顶层保存所有位姿两两之间的约束。
     if(layer_num < total_layer_num_)
     {
       int hessian_size = (thread_num-1)*(WIN_SIZE-1)*WIN_SIZE/2*part_length;
@@ -79,6 +84,7 @@ public:
 
   void init_parameter(int pose_size_ = 0)
   {
+    // 第一层的位姿来自输入轨迹；更高层位姿数由下一层关键帧数量决定。
     if(layer_num == 1)
       pose_size = pose_vec.size();
     else
@@ -86,6 +92,7 @@ public:
     tail = (pose_size - WIN_SIZE) % GAP;
     gap_num = (pose_size - WIN_SIZE) / GAP;
     last_win_size = pose_size - GAP * (gap_num+1);
+    // 将完整窗口均匀分配给线程，并在不平衡或分到零窗口时减少线程数。
     part_length = ceil((gap_num+1)/double(thread_num));
     
     if(gap_num-(thread_num-1)*part_length < 0) part_length = floor((gap_num+1)/double(thread_num));
@@ -98,6 +105,7 @@ public:
     }
     left_gap_num = gap_num-(thread_num-1)*part_length+1;
     
+    // 计算最后线程负责的数据范围及下一层关键帧的数量，尾窗存在时额外计入其输出。
     if(tail == 0)
     {
       left_size = (gap_num-(thread_num-1)*part_length+1)*WIN_SIZE;
@@ -130,6 +138,7 @@ public:
 
   HBA(int total_layer_num_, std::string data_path_, int thread_num_)
   {
+    // 初始化第一层输入轨迹，再依据上一层的分窗结果递推后续层的规模和数据目录。
     total_layer_num = total_layer_num_;
     thread_num = thread_num_;
     data_path = data_path_;
@@ -158,6 +167,7 @@ public:
 
   void update_next_layer_state(int cur_layer_num)
   {
+    // 每隔 GAP 帧抽取一个优化后位姿，作为下一层关键帧的初始状态。
     for(int i = 0; i < layers[cur_layer_num].thread_num; i++)
       if(i < layers[cur_layer_num].thread_num-1)
         for(int j = 0; j < layers[cur_layer_num].part_length; j++)
@@ -175,6 +185,7 @@ public:
 
   void pose_graph_optimization()
   {
+    // 原始层提供细粒度局部约束，最顶层提供跨关键帧约束。
     std::vector<mypcl::pose> upper_pose, init_pose;
     upper_pose = layers[total_layer_num-1].pose_vec;
     init_pose = layers[0].pose_vec;
@@ -188,10 +199,12 @@ public:
     gtsam::Vector Vector6(6);
     Vector6 << 1e-6, 1e-6, 1e-6, 1e-8, 1e-8, 1e-8;
     gtsam::noiseModel::Diagonal::shared_ptr priorModel = gtsam::noiseModel::Diagonal::Variances(Vector6);
+    // 固定首个位姿以消除整张位姿图的全局自由度，并将所有初始位姿加入 Values。
     initial.insert(0, gtsam::Pose3(gtsam::Rot3(init_pose[0].q.toRotationMatrix()), gtsam::Point3(init_pose[0].t)));
     graph.add(gtsam::PriorFactor<gtsam::Pose3>(0, gtsam::Pose3(gtsam::Rot3(init_pose[0].q.toRotationMatrix()),
                                                                gtsam::Point3(init_pose[0].t)), priorModel));
     
+    // 对原始轨迹中每个局部窗口，根据保存的 Hessian 对角项构造相对位姿约束噪声。
     for(uint i = 0; i < init_pose.size(); i++)
     {
       if(i > 0) initial.insert(i, gtsam::Pose3(gtsam::Rot3(init_pose[i].q.toRotationMatrix()), gtsam::Point3(init_pose[i].t)));
@@ -221,6 +234,7 @@ public:
           }
     }
 
+    // 顶层关键帧之间建立稠密的相对位姿约束，并映射回原始轨迹中的 GAP 幂次索引。
     int pose_size = upper_pose.size();
     cnt = 0;
     for(int i = 0; i < pose_size-1; i++)
@@ -244,6 +258,7 @@ public:
         graph.push_back(factor);
       }
 
+    // 使用 iSAM2 增量求解非线性位姿图。
     gtsam::ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
     parameters.relinearizeSkip = 1;
@@ -255,6 +270,7 @@ public:
 
     cout << "vertex size " << results.size() << endl;
 
+    // 将优化结果写回原始轨迹并保存到 pose.json。
     for(uint i = 0; i < results.size(); i++)
     {
       gtsam::Pose3 pose = results.at(i).cast<gtsam::Pose3>();

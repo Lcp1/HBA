@@ -1,12 +1,14 @@
 <launch>
+  <!-- 轨迹可视化节点：file_path 指向 pose.json 和 pcd/ 所在目录。 -->
   <node pkg="hba" type="visualize_map" name="visualize_map" output="screen">
     <param name="file_path" type="string"
-      value="/home/sam/Desktop/kitti07/"/>
+      value="/home/lcp/data/bag/kitti07/"/>
     <param name="downsample_size" type="double" value="0.1"/>
     <param name="pcd_name_fill_num" type="int" value="5"/> <!--set 5 for kitti07 and 0 for park-->
     <param name="marker_size" type="double" value="0.5"/>
   </node>
 
+  <!-- 默认启动 RViz 展示点云、位姿和关键帧标记。 -->
   <arg name="rviz" default="1"/>
   <group if="$(arg rviz)">
     <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz"

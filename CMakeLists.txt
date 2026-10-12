@@ -20,12 +20,15 @@ find_package(catkin REQUIRED COMPONENTS
   visualization_msgs
   tf
 )
+  # 主程序：执行分层局部 BA、顶层全局 BA 和 GTSAM 位姿图优化。
 
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED)
+  # 可视化程序：发布配准后的点云和轨迹 Marker。
 find_package(GTSAM REQUIRED QUIET)
 
 catkin_package(
+  # 评估程序：并行计算点云的平均局部熵（MME）。
   CATKIN_DEPENDS roscpp rospy std_msgs message_runtime
 )
 

@@ -12,8 +12,10 @@
 
 #include "tools.hpp"
 
+// 局部 BA 的窗口帧数与滑动步长；相邻窗口因此共享一部分帧。
 #define WIN_SIZE 10
 #define GAP 5
+// AVG_THR 使用平均体素残差；FULL_HESS 保存完整层间 Hessian 约束。
 #define AVG_THR
 #define FULL_HESS
 // #define ENABLE_RVIZ
@@ -25,9 +27,11 @@ int layer_limit = 2;
 int MIN_PT = 15;
 int thd_num = 16;
 
+// 汇集一个窗口内所有平面体素的统计量，并负责残差及其 Hessian/Jacobian 计算。
 class VOX_HESS
 {
 public:
+  // 每个元素指向一个平面体素的逐帧统计量；origin_points 仅供可选调试/过滤使用。
   vector<const vector<VOX_FACTOR>*> plvec_voxels;
   vector<PLV(3)> origin_points;
   int win_size;
@@ -41,6 +45,7 @@ public:
 
   void get_center(const PLV(3)& vec_orig, PLV(3)& origin_points_)
   {
+    // 将体素内点坐标复制到调试缓存。
     size_t pt_size = vec_orig.size();
     for(size_t i = 0; i < pt_size; i++)
       origin_points_.emplace_back(vec_orig[i]);
@@ -49,6 +54,7 @@ public:
 
   void push_voxel(const vector<VOX_FACTOR>* sig_orig, const vector<PLV(3)>* vec_orig)
   {
+    // 仅接收至少由两帧共同观测的体素，才能形成帧间优化约束。
     int process_size = 0;
     for(int i = 0; i < win_size; i++)
       if((*sig_orig)[i].N != 0)
@@ -69,6 +75,7 @@ public:
 
   Eigen::Matrix<double, 6, 1> lam_f(Eigen::Vector3d *u, int m, int n)
   {
+    // 计算特征向量外积对称化后的 6 个独立元素，供特征值导数使用。
     Eigen::Matrix<double, 6, 1> jac;
     jac[0] = u[m][0] * u[n][0];
     jac[1] = u[m][0] * u[n][1] + u[m][1] * u[n][0];
@@ -82,6 +89,7 @@ public:
   void acc_evaluate2(const vector<IMUST>& xs, int head, int end,
                      Eigen::MatrixXd& Hess, Eigen::VectorXd& JacT, double& residual)
   {
+    // 累加指定体素范围的最小协方差特征值残差及其一、二阶导数。
     Hess.setZero(); JacT.setZero(); residual = 0;
     vector<VOX_FACTOR> sig_tran(win_size);
     const int kk = 0;
@@ -94,6 +102,7 @@ public:
 
     for(int a = head; a < end; a++)
     {
+      // 将该体素在各帧中的原始统计量变换到当前位姿下，再合并求总体协方差。
       const vector<VOX_FACTOR>& sig_orig = *plvec_voxels[a];
 
       VOX_FACTOR sig;
@@ -110,6 +119,7 @@ public:
       const Eigen::Matrix3d& U = saes.eigenvectors();
       int NN = sig.N;
       
+      // 最小特征值对应法向方向上的离散程度，作为局部平面残差。
       Eigen::Vector3d u[3] = {U.col(0), U.col(1), U.col(2)};
 
       const Eigen::Vector3d& uk = u[kk];
@@ -181,12 +191,14 @@ public:
 
     for(int i = 1; i < win_size; i++)
       for(int j = 0; j < i; j++)
+        // 上三角块已累加，利用对称性补齐下三角块。
         Hess.block<6, 6>(6*i, 6*j) = Hess.block<6, 6>(6*j, 6*i).transpose();
     
   }
 
   void evaluate_only_residual(const vector<IMUST>& xs, double& residual)
   {
+    // 只计算当前位姿下所有有效平面体素的残差，用于评估试探步。
     residual = 0;
     vector<VOX_FACTOR> sig_tran(win_size);
     int kk = 0; // The kk-th lambda value
@@ -216,7 +228,7 @@ public:
 
   std::vector<double> evaluate_residual(const vector<IMUST>& xs)
   {
-    /* for outlier removal usage */
+    // 返回每个体素单独的残差，供按分位数阈值剔除离群约束。
     std::vector<double> residuals;
     vector<VOX_FACTOR> sig_tran(win_size);
     int kk = 0; // The kk-th lambda value
@@ -247,6 +259,7 @@ public:
 
   void remove_residual(const vector<IMUST>& xs, double threshold, double reject_num)
   {
+    // 从约束列表中删除残差不小于阈值的体素，最多删除 reject_num 个。
     vector<VOX_FACTOR> sig_tran(win_size);
     int kk = 0; // The kk-th lambda value
     int rej_cnt = 0;
@@ -281,9 +294,11 @@ public:
 
 int BINGO_CNT = 0;
 enum OCTO_STATE {UNKNOWN, MID_NODE, PLANE};
+// 八叉树节点：保存逐帧点云统计量，并将空间判定为平面、继续细分或停止细分。
 class OCTO_TREE_NODE
 {
 public:
+  // 原始/变换后点及其统计量按窗口帧分别存储；子节点对应当前体素的八个象限。
   OCTO_STATE octo_state;
   int layer, win_size;
   vector<PLV(3)> vec_orig, vec_tran;
@@ -322,6 +337,7 @@ public:
 
   bool judge_eigen()
   {
+    // 合并各帧变换后统计量并做 PCA，以最小特征向量作为候选平面法向。
     VOX_FACTOR covMat;
     for(int i = 0; i < win_size; i++)
       if(sig_tran[i].N > 0)
@@ -335,6 +351,7 @@ public:
     eigen_ratio = saes.eigenvalues()[0] / saes.eigenvalues()[2]; // [0] is the smallest
     if(eigen_ratio > eigen_thr) return 0;
 
+    // 再检查八个子区域的最小特征值是否与整块尺度相符，避免把偶然共面误判为稳定平面。
     double eva0 = saes.eigenvalues()[0];
     double sqr_eva0 = sqrt(eva0);
     Eigen::Vector3d center_turb = center + 5 * sqr_eva0 * direct;
@@ -375,6 +392,7 @@ public:
 
   void cut_func(int ci)
   {
+    // 将第 ci 帧的点按体素中心分到八个子体素，并同步更新子节点统计量。
     PLV(3)& pvec_orig = vec_orig[ci];
     PLV(3)& pvec_tran = vec_tran[ci];
 
@@ -409,6 +427,7 @@ public:
 
   void recut()
   {
+    // UNKNOWN 节点先判断点数和局部平面性；不满足时继续递归细分。
     if(octo_state == UNKNOWN)
     {
       int point_size = 0;
@@ -417,6 +436,7 @@ public:
       
       if(point_size < MIN_PT)
       {
+        // 点数不足以支撑可靠平面估计，将节点标记为内部/终止节点并释放点缓存。
         octo_state = MID_NODE;
         vector<PLV(3)>().swap(vec_orig);
         vector<PLV(3)>().swap(vec_tran);
@@ -427,6 +447,7 @@ public:
 
       if(judge_eigen())
       {
+        // 满足平面判据后保留为叶平面，后续可直接生成优化约束。
         octo_state = PLANE;
         #ifndef ENABLE_FILTER
         #ifndef ENABLE_RVIZ
@@ -440,6 +461,7 @@ public:
       {
         if(layer == layer_limit)
         {
+          // 达到最大细分层数仍不是平面时停止递归。
           octo_state = MID_NODE;
           vector<PLV(3)>().swap(vec_orig);
           vector<PLV(3)>().swap(vec_tran);
@@ -461,6 +483,7 @@ public:
 
   void tras_opt(VOX_HESS& vox_opt)
   {
+    // 平面叶节点加入 Hessian 约束集合；非叶节点递归访问子节点。
     if(octo_state == PLANE)
       vox_opt.push_voxel(&sig_orig, &vec_orig);
     else
@@ -471,6 +494,7 @@ public:
 
   void tras_display(int layer = 0)
   {
+    // 可选 RViz 调试输出：发布平面点云和法向箭头，不参与优化计算。
     float ref = 255.0*rand()/(RAND_MAX + 1.0f);
     pcl::PointXYZINormal ap;
     ap.intensity = ref;
@@ -550,9 +574,11 @@ public:
   OCTO_TREE_ROOT(int _winsize, float _eigen_thr): OCTO_TREE_NODE(_winsize, _eigen_thr){}
 };
 
+// 窗口位姿优化器：并行构建正规方程，再以 LM 阻尼方式更新各帧位姿。
 class VOX_OPTIMIZER
 {
 public:
+  // jac_leng 按每帧 DVEL 维计算；imu_leng 按每帧 DIM 维计算。
   int win_size, jac_leng, imu_leng;
   VOX_OPTIMIZER(int _win_size = WIN_SIZE): win_size(_win_size)
   {
@@ -563,6 +589,7 @@ public:
   double divide_thread(vector<IMUST>& x_stats, VOX_HESS& voxhess, vector<IMUST>& x_ab,
                        Eigen::MatrixXd& Hess,Eigen::VectorXd& JacT)
   {
+    // 将体素约束分块交给多个线程计算，最后累加各线程 Hessian、Jacobian 和残差。
     double residual = 0;
     Hess.setZero(); JacT.setZero();
     PLM(-1) hessians(thd_num);
@@ -602,6 +629,7 @@ public:
 
   double only_residual(vector<IMUST>& x_stats, VOX_HESS& voxhess, vector<IMUST>& x_ab, bool is_avg = false)
   {
+    // 评估给定状态的目标函数值，可选择返回体素平均残差。
     double residual2 = 0;
     voxhess.evaluate_only_residual(x_stats, residual2);
     if(is_avg) return residual2 / voxhess.plvec_voxels.size();
@@ -610,6 +638,7 @@ public:
 
   void remove_outlier(vector<IMUST>& x_stats, VOX_HESS& voxhess, double ratio)
   {
+    // 按残差排序，选择保留比例对应的阈值并移除高残差体素。
     std::vector<double> residuals = voxhess.evaluate_residual(x_stats);
     std::sort(residuals.begin(), residuals.end()); // sort in ascending order
     double threshold = residuals[std::floor((1-ratio)*voxhess.plvec_voxels.size())-1];
@@ -623,6 +652,7 @@ public:
   void damping_iter(vector<IMUST>& x_stats, VOX_HESS& voxhess, double& residual,
                     PLV(6)& hess_vec, size_t& mem_cost)
   {
+    // Levenberg-Marquardt 迭代：解 (H + uD) dx = -J，试探更新并按目标下降情况调整阻尼。
     double u = 0.01, v = 2;
     Eigen::MatrixXd D(jac_leng, jac_leng), Hess(jac_leng, jac_leng),
                     HessuD(jac_leng, jac_leng);
@@ -635,6 +665,7 @@ public:
 
     vector<IMUST> x_ab(win_size);
     x_ab[0] = x_stats[0];
+    // 将全局位姿转换为相邻帧相对位姿，供局部窗口约束计算使用。
     for(int i=1; i<win_size; i++)
     {
       x_ab[i].p = x_stats[i-1].R.transpose() * (x_stats[i].p - x_stats[i-1].p);
@@ -647,6 +678,7 @@ public:
     double loop_num = 0;
     for(int i = 0; i < 10; i++)
     {
+      // 接受上一步后重新计算正规方程；拒绝时增大阻尼并复用现有 Hessian。
       if(is_calc_hess)
       {
         double tm = ros::Time::now().toSec();
@@ -686,6 +718,7 @@ public:
       // std::cout<<"delta x\n"<<(new_dxi-dxi).transpose()/dxi.norm()<<std::endl;
 
       x_stats_temp = x_stats;
+      // 以 6 维旋转/平移增量更新每帧状态，先放入临时变量以便判断是否接受。
       for(int j = 0; j < win_size; j++)
       {
         x_stats_temp[j].R = x_stats[j].R * Exp(dxi.block<3, 1>(DVEL*j, 0));
@@ -710,6 +743,7 @@ public:
       
       if(q > 0)
       {
+        // 目标函数下降则接受新状态并减小阻尼。
         x_stats = x_stats_temp;
         q = q / q1;
         v = 2;
@@ -719,6 +753,7 @@ public:
       }
       else
       {
+        // 目标未下降则拒绝该步并增大阻尼。
         u = u * v;
         v = 2 * v;
         is_calc_hess = false;
@@ -726,6 +761,7 @@ public:
       #ifdef AVG_THR
       if((fabs(residual1-residual2)/residual1) < 0.05 || i == 9)
       {
+        // 收敛或达到迭代上限后记录峰值内存和帧间 Hessian 对角约束。
         if(mem_cost < max_mem) mem_cost = max_mem;
         for(int j = 0; j < win_size-1; j++)
           for(int k = j+1; k < win_size; k++)
@@ -740,6 +776,7 @@ public:
 
   size_t check_mem()
   {
+    // 从 Linux /proc/self/status 读取当前进程常驻内存 VmRSS，单位为 kB。
     FILE* file = fopen("/proc/self/status", "r");
     int result = -1;
     char line[128];

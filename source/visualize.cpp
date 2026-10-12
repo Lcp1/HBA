@@ -32,11 +32,13 @@
 using namespace std;
 using namespace Eigen;
 
+// 读取位姿和逐帧点云，并通过 ROS 话题发布地图、轨迹和帧号标记。
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "visualize");
   ros::NodeHandle nh("~");
 
+  // 可视化输出：地图点云、单帧调试点云、位姿数组、轨迹球和关键帧编号。
   ros::Publisher pub_map = nh.advertise<sensor_msgs::PointCloud2>("/cloud_map", 100);
   ros::Publisher pub_debug = nh.advertise<sensor_msgs::PointCloud2>("/cloud_debug", 100);
   ros::Publisher pub_pose = nh.advertise<geometry_msgs::PoseArray>("/poseArrayTopic", 10);
@@ -47,6 +49,7 @@ int main(int argc, char** argv)
   double downsample_size, marker_size;
   int pcd_name_fill_num;
 
+  // 从 ROS 私有参数读取数据目录、点云编号格式和显示尺度。
   nh.getParam("file_path", file_path);
   nh.getParam("downsample_size", downsample_size);
   nh.getParam("pcd_name_fill_num", pcd_name_fill_num);
@@ -70,11 +73,13 @@ int main(int argc, char** argv)
 
   cout<<"push enter to view"<<endl;
   getchar();
+  // 按轨迹顺序逐帧加载点云，变换到地图坐标系后发布本帧点云和位姿。
   for(size_t i = 0; i < pose_size; i++)
   {
     mypcl::loadPCD(file_path + "pcd/", pcd_name_fill_num, pc_surf, i);
 
     pcl::PointCloud<PointType>::Ptr pc_filtered(new pcl::PointCloud<PointType>);
+    // 当前代码保留所有读入点；这里的副本为后续过滤步骤预留处理入口。
     pc_filtered->resize(pc_surf->points.size());
     int cnt = 0;
     for(size_t j = 0; j < pc_surf->points.size(); j++)
@@ -87,6 +92,7 @@ int main(int argc, char** argv)
     mypcl::transform_pointcloud(*pc_filtered, *pc_filtered, pose_vec[i].t, pose_vec[i].q);
     downsample_voxel(*pc_filtered, downsample_size);
 
+    // 发布当前帧点云以及截至当前帧的位姿数组。
     pcl::toROSMsg(*pc_filtered, cloudMsg);
     cloudMsg.header.frame_id = "camera_init";
     cloudMsg.header.stamp = cur_t;
@@ -110,7 +116,7 @@ int main(int argc, char** argv)
     // transform.setRotation(q);
     // br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "camera_init", "turtle_name"));
 
-    // publish pose trajectory
+    // 用彩色球体表示每帧位姿，颜色沿轨迹进度渐变。
     visualization_msgs::Marker marker;
     marker.header.frame_id = "camera_init";
     marker.header.stamp = cur_t;
@@ -135,7 +141,7 @@ int main(int argc, char** argv)
     marker.lifetime = ros::Duration();
     pub_trajectory.publish(marker);
 
-    // publish pose number
+    // 仅为每 GAP 帧添加编号文字，避免轨迹标注过密。
     visualization_msgs::Marker marker_txt;
     marker_txt.header.frame_id = "camera_init";
     marker_txt.header.stamp = cur_t;
@@ -168,6 +174,7 @@ int main(int argc, char** argv)
     ros::Duration(0.001).sleep();
   }
 
+  // 保持 ROS 节点运行，使 RViz 可以持续接收和显示已发布的话题。
   ros::Rate loop_rate(1);
   while(ros::ok())
   {

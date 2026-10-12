@@ -1,11 +1,13 @@
 <launch>
+  <!-- 分层 HBA 节点：数据目录、金字塔层数、PCD 编号宽度及并行线程数。 -->
   <node pkg="hba" type="hba" name="hba" output="screen">
-    <param name="data_path" type="string" value="/home/sam/Desktop/kitti07/"/>
+    <param name="data_path" type="string" value="/home/lcp/data/bag/kitti07/"/>
     <param name="total_layer_num" type="int" value="3"/>
     <param name="pcd_name_fill_num" type="int" value="5"/> <!--set 5 for kitti07 and 0 for park-->
     <param name="thread_num" type="int" value="16"/>
   </node>
 
+  <!-- rviz 非零时同时启动 RViz，并加载 rosbag.rviz 配置。 -->
   <arg name="rviz" default="0"/>
   <group if="$(arg rviz)">
     <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz"
