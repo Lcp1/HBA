@@ -63,9 +63,11 @@ void PC2Entropy(double& Entropy, int part_num)
   int partSize = full_cloud->points.size()/THR_NUM;
   pcl::PointCloud<PointType>::Ptr pc(new pcl::PointCloud<PointType>);
   // 每个线程处理连续 partSize 个点。
+  // 由 part_num 计算该线程在原始云中的半开区间，并复制为待评估采样点集。
   for(size_t i = part_num*partSize; i < (part_num+1)*partSize; i++)
     pc->points.push_back(full_cloud->points[i]);
   
+  // 对本线程分片中的每个采样点查询邻域并累加局部熵。
   for(size_t i = 0; i < pc->points.size(); i++)
   {
     std::vector<int> pointIdxRadiusSearch;
@@ -76,6 +78,7 @@ void PC2Entropy(double& Entropy, int part_num)
     if(numberOfNeighbors > 15)
     {
       pcl::PointCloud< PointType>::Ptr localCloud (new pcl::PointCloud< PointType>);
+      // 将 KD 树返回的邻居索引映射回完整点云，构成协方差计算所需的局部点集。
       for(size_t iz = 0; iz < pointIdxRadiusSearch.size(); ++iz)
         localCloud->points.push_back(full_cloud->points[pointIdxRadiusSearch[iz]]);
       localEntropy = computeEntropy(localCloud);
@@ -105,9 +108,11 @@ int main(int argc, char** argv)
   vector<double> Entropys;
   Entropys.resize(THR_NUM);
   
+  // 每个线程写入自己索引对应的熵槽位，避免多个线程竞争同一元素。
   for(int i = 0; i < THR_NUM; i++)
     mthreads[i] = new thread(PC2Entropy, ref(Entropys[i]), i);
   
+  // 等待全部分片结束后释放线程句柄，之后才能汇总完整的 Entropys。
   for(int i = 0; i < THR_NUM; i++)
   {
     mthreads[i]->join();
@@ -118,6 +123,7 @@ int main(int argc, char** argv)
   // 汇总各线程的平均熵，并计算线程间均值和样本标准差。
   double mean =  sum / Entropys.size(); //均值  
   double accum  = 0.0;  
+  // 对每个线程的分片均值累加平方偏差，供样本标准差计算。
   std::for_each (std::begin(Entropys), std::end(Entropys), [&](const double d)
   {
     accum  += (d-mean)*(d-mean);  

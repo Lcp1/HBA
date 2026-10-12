@@ -51,6 +51,8 @@ public:
     hessians.clear(); mem_costs.clear();
   }
 
+  // 按已计算的层参数分配线程、位姿、点云、内存统计及 Hessian 存储空间。
+  // total_layer_num_ 用于区分需要保存局部窗口约束的中间层和保存全局约束的顶层。
   void init_storage(int total_layer_num_)
   {
     // 根据窗口数分配位姿、点云和线程存储空间。
@@ -78,10 +80,13 @@ public:
     }
     #endif
 
+    // 再追加 thread_num 个零；前面的 resize 已创建同样数量的默认零元素，因此当前容器长度为 2 倍。
     for(int i = 0; i < thread_num; i++)
       mem_costs.push_back(0);
   }
 
+  // 根据当前层位姿数计算完整窗口数、尾窗尺寸和线程分工，并修正过量线程数。
+  // 第一层从 pose_vec 取数量；更高层使用参数 pose_size_。
   void init_parameter(int pose_size_ = 0)
   {
     // 第一层的位姿来自输入轨迹；更高层位姿数由下一层关键帧数量决定。
@@ -97,8 +102,10 @@ public:
     
     if(gap_num-(thread_num-1)*part_length < 0) part_length = floor((gap_num+1)/double(thread_num));
 
+    // 若每线程分不到窗口或最后线程任务超过其他线程约两倍，则进入循环缩减线程数。
     while(part_length == 0 || (gap_num-(thread_num-1)*part_length+1)/double(part_length) > 2)
     {
+      // 出现空任务或尾线程负载超过其他线程两倍时，减少线程数并重新均分窗口。
       thread_num -= 1;
       part_length = ceil((gap_num+1)/double(thread_num));
       if(gap_num-(thread_num-1)*part_length < 0) part_length = floor((gap_num+1)/double(thread_num));
@@ -136,6 +143,8 @@ public:
   std::vector<LAYER> layers;
   std::string data_path;
 
+  // 创建 total_layer_num_ 层，读取初始轨迹，并逐层推导后续层的规模及数据路径。
+  // data_path_ 应以目录分隔符结尾；thread_num_ 是初始请求的工作线程数。
   HBA(int total_layer_num_, std::string data_path_, int thread_num_)
   {
     // 初始化第一层输入轨迹，再依据上一层的分窗结果递推后续层的规模和数据目录。
@@ -143,6 +152,7 @@ public:
     thread_num = thread_num_;
     data_path = data_path_;
 
+    // 创建全部层对象，并给每层编号；随后每层会根据实际任务量调整线程数。
     layers.resize(total_layer_num);
     for(int i = 0; i < total_layer_num; i++)
     {
@@ -154,6 +164,8 @@ public:
     layers[0].init_parameter();
     layers[0].init_storage(total_layer_num);
 
+    // 逐层推算下一层位姿数量：完整窗口各生成一个关键帧，存在尾窗时额外生成一个。
+    // 每层准备好容量后，将其输入目录指向上一层的 process1 子目录。
     for(int i = 1; i < total_layer_num; i++)
     {
       int pose_size_ = (layers[i-1].thread_num-1)*layers[i-1].part_length;
@@ -165,9 +177,12 @@ public:
     printf("HBA init done!\n");
   }
 
+  // 将 cur_layer_num 层按 GAP 间隔抽取的优化位姿写入下一层 pose_vec。
+  // 最后一个线程的抽取数量由 j_upper 决定，以覆盖尾部关键帧。
   void update_next_layer_state(int cur_layer_num)
   {
     // 每隔 GAP 帧抽取一个优化后位姿，作为下一层关键帧的初始状态。
+    // 普通线程各自输出 part_length 个关键帧，按线程块顺序写入下一层数组。
     for(int i = 0; i < layers[cur_layer_num].thread_num; i++)
       if(i < layers[cur_layer_num].thread_num-1)
         for(int j = 0; j < layers[cur_layer_num].part_length; j++)
@@ -176,6 +191,7 @@ public:
           layers[cur_layer_num+1].pose_vec[i*layers[cur_layer_num].part_length+j] = layers[cur_layer_num].pose_vec[index];
         }
       else
+        // 最后一个线程可能额外负责尾窗，因此使用 j_upper 覆盖其实际输出数。
         for(int j = 0; j < layers[cur_layer_num].j_upper; j++)
         {
           int index = (i * layers[cur_layer_num].part_length + j) * GAP;
@@ -183,6 +199,8 @@ public:
         }
   }
 
+  // 使用第一层局部 Hessian 和顶层关键帧 Hessian 构建 GTSAM 因子图并运行 iSAM2。
+  // 优化结果通过 write_pose() 写到 data_path/pose.json，同时归一化首帧坐标系。
   void pose_graph_optimization()
   {
     // 原始层提供细粒度局部约束，最顶层提供跨关键帧约束。
@@ -205,14 +223,18 @@ public:
                                                                gtsam::Point3(init_pose[0].t)), priorModel));
     
     // 对原始轨迹中每个局部窗口，根据保存的 Hessian 对角项构造相对位姿约束噪声。
+    // 外层扫描原始轨迹；每到一个 GAP 对齐的窗口起点，就把该帧加入初始值并遍历窗口内帧对。
     for(uint i = 0; i < init_pose.size(); i++)
     {
       if(i > 0) initial.insert(i, gtsam::Pose3(gtsam::Rot3(init_pose[i].q.toRotationMatrix()), gtsam::Point3(init_pose[i].t)));
 
       if(i%GAP == 0 && cnt < init_cov.size())
+        // j、k 枚举当前窗口内所有不重复的帧对，每一对对应一个 Hessian 摘要和 Between 因子。
         for(int j = 0; j < WIN_SIZE-1; j++)
+          // 对固定 j，仅枚举后续帧 k，避免重复建立对称的相对位姿因子。
           for(int k = j+1; k < WIN_SIZE; k++)
           {
+            // 窗口到达轨迹末尾时停止枚举越界帧对。
             if(i+j+1 >= init_pose.size() || i+k >= init_pose.size()) break;
 
             cnt++;
@@ -237,7 +259,9 @@ public:
     // 顶层关键帧之间建立稠密的相对位姿约束，并映射回原始轨迹中的 GAP 幂次索引。
     int pose_size = upper_pose.size();
     cnt = 0;
+    // 两层循环枚举顶层所有 i<j 的关键帧对，约束端点映射到原轨迹相隔 GAP^(层数-1) 的节点。
     for(int i = 0; i < pose_size-1; i++)
+      // 固定 i 后，j 遍历它之后的所有关键帧，避免重复或自连接因子。
       for(int j = i+1; j < pose_size; j++)
       {
         cnt++;
@@ -271,6 +295,7 @@ public:
     cout << "vertex size " << results.size() << endl;
 
     // 将优化结果写回原始轨迹并保存到 pose.json。
+    // results 按 GTSAM key 顺序读取，每个估计姿态覆盖 init_pose 中对应节点。
     for(uint i = 0; i < results.size(); i++)
     {
       gtsam::Pose3 pose = results.at(i).cast<gtsam::Pose3>();

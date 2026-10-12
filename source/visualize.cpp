@@ -74,6 +74,7 @@ int main(int argc, char** argv)
   cout<<"push enter to view"<<endl;
   getchar();
   // 按轨迹顺序逐帧加载点云，变换到地图坐标系后发布本帧点云和位姿。
+  // i 同时索引 pose_vec 与对应 PCD 文件；每轮处理一帧并发布其可视化消息。
   for(size_t i = 0; i < pose_size; i++)
   {
     mypcl::loadPCD(file_path + "pcd/", pcd_name_fill_num, pc_surf, i);
@@ -82,6 +83,7 @@ int main(int argc, char** argv)
     // 当前代码保留所有读入点；这里的副本为后续过滤步骤预留处理入口。
     pc_filtered->resize(pc_surf->points.size());
     int cnt = 0;
+    // 逐点复制当前 PCD；当前没有过滤条件，所以 cnt 最终等于输入点数。
     for(size_t j = 0; j < pc_surf->points.size(); j++)
     {
       pc_filtered->points[cnt] = pc_surf->points[j];
@@ -99,6 +101,7 @@ int main(int argc, char** argv)
     pub_map.publish(cloudMsg);
 
     geometry_msgs::Pose apose;
+    // 将当前帧的四元数和平移字段复制到 ROS Pose，再追加到累积轨迹数组。
     apose.orientation.w = pose_vec[i].q.w();
     apose.orientation.x = pose_vec[i].q.x();
     apose.orientation.y = pose_vec[i].q.y();
@@ -168,6 +171,7 @@ int main(int argc, char** argv)
     marker_txt.color.b = 1.0f;
     marker_txt.color.a = 1.0;
     marker_txt.lifetime = ros::Duration();
+    // MarkerArray 会保留已加入的关键帧编号；每 GAP 帧追加一个新文字标记。
     if(i%GAP == 0) markerArray.markers.push_back(marker_txt);
     pub_pose_number.publish(markerArray);
 
